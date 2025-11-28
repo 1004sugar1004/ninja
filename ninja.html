@@ -1,0 +1,1129 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>나루토 닌자 런 - HTML Edition</title>
+    
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Jua&display=swap" rel="stylesheet">
+
+    <style>
+        body { font-family: 'Black Han Sans', sans-serif; }
+        
+        .overlay-base {
+            background: rgba(0, 0, 0, 0.85);
+            z-index: 100;
+        }
+        .btn-primary {
+            background: #ff4500;
+            border: 2px solid white;
+            text-shadow: 1px 1px #8B0000;
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            font-size: 1.25rem;
+            color: white;
+            transition: all 0.2s;
+        }
+        .btn-primary:hover {
+            background: #ff6347;
+            transform: scale(1.05);
+        }
+        .quiz-btn:hover {
+            background: #ffe0b2;
+            border-color: #ffb74d;
+        }
+        
+        /* Range Slider Customization */
+        input[type=range] {
+            -webkit-appearance: none; 
+            background: transparent; 
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+        }
+        input[type=range]:focus {
+            outline: none; 
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white h-screen flex items-center justify-center overflow-hidden">
+
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback } = React;
+
+        // --- Web Audio API 초기화 및 설정 ---
+        const audioCtx = typeof window !== 'undefined' ? new (window.AudioContext || window.webkitAudioContext)() : null;
+        let audioContextStarted = false;
+        let bgmGain = null;
+        let masterGain = null;
+        let isBGMPlaying = false;
+        const BGM_TEMPO = 135;
+        const BGM_BASE_TIME = 60 / BGM_TEMPO; 
+        let bgmTimerId = null;
+
+        // 음계 주파수 (Hz) 정의 - 8비트 사운드용
+        const NOTES = {
+            'C3': 130.81, 'D3': 146.83, 'E3': 164.81, 'F3': 174.61, 'G3': 196.00, 'A3': 220.00, 'B3': 246.94,
+            'C4': 261.63, 'D4': 293.66, 'E4': 329.63, 'F4': 349.23, 'G4': 392.00, 'A4': 440.00, 'B4': 493.88,
+            'C5': 523.25, 'D5': 587.33, 'E5': 659.25, 'F5': 698.46, 'G5': 783.99, 'A5': 880.00, 'B5': 987.77,
+            'C6': 1046.50, 'E6': 1318.51, 'G6': 1567.98, 'R': 0 // Rest
+        };
+
+        // 배경 음악 시퀀스 A (메인 테마)
+        const BGM_SEQUENCE_A = [
+            { note: 'G4', duration: 0.25 }, { note: 'A4', duration: 0.25 }, { note: 'C5', duration: 0.5 },
+            { note: 'G4', duration: 0.5 }, { note: 'R', duration: 0.5 }, { note: 'C4', duration: 0.25 }, { note: 'D4', duration: 0.25 },
+            { note: 'E4', duration: 0.5 }, { note: 'G4', duration: 0.5 }, { note: 'A4', duration: 0.5 },
+            { note: 'G4', duration: 0.5 }, { note: 'R', duration: 1 },
+        ];
+
+        // 배경 음악 시퀀스 B (브릿지/서브 테마)
+        const BGM_SEQUENCE_B = [
+            { note: 'C5', duration: 0.25 }, { note: 'B4', duration: 0.25 }, { note: 'A4', duration: 0.25 }, { note: 'G4', duration: 0.25 },
+            { note: 'F4', duration: 0.5 }, { note: 'D4', duration: 0.5 }, { note: 'C4', duration: 1 },
+            { note: 'G4', duration: 0.5 }, { note: 'E4', duration: 0.5 }, { note: 'G4', duration: 0.5 },
+            { note: 'A4', duration: 0.5 }, { note: 'R', duration: 1 },
+        ];
+
+        const ALL_BGM_SEQUENCES = [BGM_SEQUENCE_A, BGM_SEQUENCE_B];
+
+        // 오디오 컨텍스트 활성화
+        const startAudioContext = () => {
+            if (audioCtx && audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+            if (audioCtx && !audioContextStarted) {
+                audioContextStarted = true;
+                if (!masterGain) {
+                     masterGain = audioCtx.createGain();
+                     masterGain.gain.setValueAtTime(0.5, audioCtx.currentTime);
+                     masterGain.connect(audioCtx.destination);
+                }
+            }
+        };
+
+        // 배경 음악 재생 관리
+        const scheduleBGM = (startTime, sequenceIndex) => {
+            if (!audioCtx || !isBGMPlaying || !bgmGain) return;
+
+            if (bgmTimerId) {
+                clearTimeout(bgmTimerId);
+                bgmTimerId = null;
+            }
+
+            const sequence = ALL_BGM_SEQUENCES[sequenceIndex % ALL_BGM_SEQUENCES.length];
+            let time = startTime;
+            let totalDuration = 0;
+
+            sequence.forEach(noteData => {
+                const duration = noteData.duration * BGM_BASE_TIME;
+                
+                if (noteData.note !== 'R') {
+                    const osc = audioCtx.createOscillator();
+                    const gain = audioCtx.createGain();
+
+                    osc.type = 'square';
+                    osc.frequency.setValueAtTime(NOTES[noteData.note], time);
+                    osc.connect(gain);
+                    gain.connect(bgmGain);
+
+                    gain.gain.setValueAtTime(0, time);
+                    gain.gain.linearRampToValueAtTime(0.12, time + 0.01); 
+                    gain.gain.linearRampToValueAtTime(0, time + duration);
+
+                    osc.start(time);
+                    osc.stop(time + duration);
+                }
+                time += duration;
+                totalDuration += duration;
+            });
+
+            const nextSequenceIndex = (sequenceIndex + 1) % ALL_BGM_SEQUENCES.length;
+            const lookahead = 0.1; 
+            if (isBGMPlaying) {
+                 bgmTimerId = setTimeout(() => scheduleBGM(time, nextSequenceIndex), (time - audioCtx.currentTime - lookahead) * 1000);
+            }
+        };
+
+        const startBGM = () => {
+            if (!audioCtx || isBGMPlaying) return;
+            
+            if (bgmTimerId) {
+                clearTimeout(bgmTimerId);
+                bgmTimerId = null;
+            }
+
+            bgmGain = audioCtx.createGain();
+            bgmGain.gain.setValueAtTime(1.0, audioCtx.currentTime);
+            if (masterGain) {
+                bgmGain.connect(masterGain);
+            } else {
+                bgmGain.connect(audioCtx.destination);
+            }
+            
+            isBGMPlaying = true;
+            scheduleBGM(audioCtx.currentTime, 0);
+        };
+
+        // Procedural Audio Synthesis
+        function playSound(type, note = null) {
+            if (!audioCtx || !audioContextStarted) return;
+
+            const now = audioCtx.currentTime;
+            let oscillator = audioCtx.createOscillator();
+            let gainNode = audioCtx.createGain();
+            gainNode.gain.setValueAtTime(0, now);
+            
+            oscillator.connect(gainNode);
+            if (masterGain) {
+                gainNode.connect(masterGain);
+            } else {
+                gainNode.connect(audioCtx.destination);
+            }
+
+            let frequency = note && NOTES[note] ? NOTES[note] : 0;
+            let duration = 0.2; 
+            let waveType = 'square';
+            let volume = 0.2;
+
+            switch (type) {
+                case 'jump':
+                    waveType = 'square';
+                    frequency = NOTES['G5'];
+                    duration = 0.08;
+                    volume = 0.3;
+                    gainNode.gain.linearRampToValueAtTime(volume, now + 0.005);
+                    gainNode.gain.linearRampToValueAtTime(0, now + duration);
+                    break;
+
+                case 'attack': 
+                    duration = 0.1;
+                    const noise = audioCtx.createBufferSource();
+                    const buffer = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.1, audioCtx.sampleRate);
+                    const data = buffer.getChannelData(0);
+                    for (let i = 0; i < buffer.length; i++) { data[i] = Math.random() * 2 - 1; }
+                    noise.buffer = buffer;
+                    const noiseGain = audioCtx.createGain();
+                    noise.connect(noiseGain);
+                    if (masterGain) {
+                        noiseGain.connect(masterGain);
+                    } else {
+                        noiseGain.connect(audioCtx.destination);
+                    }
+                    noiseGain.gain.setValueAtTime(0.5, now);
+                    noiseGain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+                    noise.start(now);
+                    noise.stop(now + duration);
+                    return; 
+
+                case 'hit': 
+                    waveType = 'sawtooth';
+                    frequency = NOTES['C3'];
+                    duration = 0.15;
+                    volume = 0.35;
+                    gainNode.gain.linearRampToValueAtTime(volume, now + 0.01);
+                    gainNode.gain.linearRampToValueAtTime(0.001, now + duration);
+                    oscillator.frequency.setValueAtTime(frequency * 1.5, now);
+                    oscillator.frequency.linearRampToValueAtTime(frequency, now + 0.1);
+                    break;
+
+                case 'item': 
+                    const itemNotes = ['G4', 'C5', 'E5'];
+                    itemNotes.forEach((n, index) => {
+                        const noteOsc = audioCtx.createOscillator();
+                        const noteGain = audioCtx.createGain();
+                        noteGain.gain.setValueAtTime(0, now + index * 0.05);
+                        noteOsc.type = 'sine';
+                        noteOsc.frequency.setValueAtTime(NOTES[n], now + index * 0.05);
+                        noteOsc.connect(noteGain);
+                        if (masterGain) {
+                            noteGain.connect(masterGain);
+                        } else {
+                            noteGain.connect(audioCtx.destination);
+                        }
+                        noteGain.gain.linearRampToValueAtTime(0.3, now + index * 0.05 + 0.005);
+                        noteGain.gain.linearRampToValueAtTime(0, now + index * 0.05 + 0.15);
+                        noteOsc.start(now + index * 0.05);
+                        noteOsc.stop(now + index * 0.05 + 0.15);
+                    });
+                    return;
+
+                case 'quiz': 
+                    waveType = 'triangle';
+                    frequency = NOTES['D5'];
+                    duration = 0.3;
+                    volume = 0.25;
+                    gainNode.gain.linearRampToValueAtTime(volume, now + 0.05);
+                    gainNode.gain.linearRampToValueAtTime(0, now + duration);
+                    break;
+                    
+                case 'quiz_correct': 
+                    const correctNotes = ['E6', 'G6'];
+                    correctNotes.forEach((n, index) => {
+                        const noteOsc = audioCtx.createOscillator();
+                        const noteGain = audioCtx.createGain();
+                        noteGain.gain.setValueAtTime(0, now + index * 0.08);
+                        noteOsc.type = 'square';
+                        noteOsc.frequency.setValueAtTime(NOTES[n], now + index * 0.08);
+                        noteOsc.connect(noteGain);
+                        if (masterGain) {
+                            noteGain.connect(masterGain);
+                        } else {
+                            noteGain.connect(audioCtx.destination);
+                        }
+                        noteGain.gain.linearRampToValueAtTime(0.4, now + index * 0.08 + 0.005);
+                        noteGain.gain.linearRampToValueAtTime(0, now + index * 0.08 + 0.1);
+                        noteOsc.start(now + index * 0.08);
+                        noteOsc.stop(now + index * 0.08 + 0.1);
+                    });
+                    return;
+                    
+                case 'gameover':
+                    waveType = 'sawtooth';
+                    duration = 1.0;
+                    volume = 0.3;
+                    oscillator.frequency.setValueAtTime(NOTES['G3'], now);
+                    oscillator.frequency.linearRampToValueAtTime(NOTES['D3'], now + duration);
+                    gainNode.gain.linearRampToValueAtTime(volume, now + 0.1);
+                    gainNode.gain.linearRampToValueAtTime(0, now + duration);
+                    break;
+                    
+                case 'clear':
+                    const clearNotes = ['C5', 'E5', 'G5', 'C6'];
+                    const noteDuration = 0.2;
+                    clearNotes.forEach((n, index) => {
+                        const noteOsc = audioCtx.createOscillator();
+                        const noteGain = audioCtx.createGain();
+                        noteOsc.type = 'square';
+                        noteOsc.frequency.setValueAtTime(NOTES[n], now + index * noteDuration);
+                        noteOsc.connect(noteGain);
+                        if (masterGain) {
+                            noteGain.connect(masterGain);
+                        } else {
+                            noteGain.connect(audioCtx.destination);
+                        }
+                        noteGain.gain.setValueAtTime(0, now + index * noteDuration);
+                        noteGain.gain.linearRampToValueAtTime(0.4, now + index * noteDuration + 0.005);
+                        gainNode.gain.linearRampToValueAtTime(0, now + index * noteDuration + noteDuration);
+                        noteOsc.start(now + index * noteDuration);
+                        noteOsc.stop(now + index * noteDuration + noteDuration);
+                    });
+                    return; 
+            }
+            
+            if (type !== 'item' && type !== 'clear' && type !== 'attack' && type !== 'quiz_correct' && frequency) {
+                oscillator.type = waveType;
+                oscillator.frequency.setValueAtTime(frequency, now);
+                oscillator.start(now);
+                oscillator.stop(now + duration);
+            }
+        }
+
+        // --- 게임 데이터 및 설정 ---
+        const CANVAS_WIDTH = 800;
+        const CANVAS_HEIGHT = 450;
+        const GROUND_Y = 400;
+
+        const stageConfig = {
+            1: { name: "나뭇잎 숲", bgColor: "#87CEEB", filter: "none", groundColor: "#228B22", detailColor: "#58742b", speed: 5, enemySpawnRate: 120 }, 
+            2: { name: "황혼의 전장", bgColor: "#FF7F50", filter: "sepia(0.6) hue-rotate(-30deg) saturate(1.5)", groundColor: "#8B4513", detailColor: "#5d351e", speed: 6, enemySpawnRate: 100 },
+            3: { name: "어둠의 추격", bgColor: "#191970", filter: "brightness(0.6) hue-rotate(200deg) contrast(1.2)", groundColor: "#2F4F4F", detailColor: "#708090", speed: 7, enemySpawnRate: 120 },
+            4: { name: "설원", bgColor: "#E0FFFF", filter: "brightness(1.1) hue-rotate(180deg) saturate(0.5)", groundColor: "#ADD8E6", detailColor: "#FFFFFF", speed: 8, enemySpawnRate: 80 },
+            5: { name: "화산 지대", bgColor: "#8B0000", filter: "sepia(0.8) hue-rotate(-50deg) saturate(2.0) contrast(1.2)", groundColor: "#3E2723", detailColor: "#FF4500", speed: 9, enemySpawnRate: 70 }
+        };
+
+        const originalQuizData = [
+            { q: "1. 우리나라의 가장 큰 명절 중 하나인 '설날' 아침에 어른들께 올리는 새해 인사를 무엇이라고 할까요?", a: ["차례", "세배", "성묘", "덕담"], c: 1 },
+            { q: "2. 설날에 먹는 음식으로, 이것을 먹어야 나이를 한 살 더 먹는다는 이야기가 전해지는 음식은?", a: ["팥죽", "송편", "떡국", "비빔밥"], c: 2 },
+            { q: "3. '정월 대보름' 아침에 부스럼이 생기지 말라고 호두나 땅콩 같은 딱딱한 열매를 깨물어 먹는 풍습은?", a: ["부럼 깨기", "더위 팔기", "쥐불놀이", "달집태우기"], c: 0 },
+            { q: "4. 음력 5월 5일 '단오'에 여자들이 머릿결이 좋아지라고 머리를 감았던 물은?", a: ["소금물", "창포물", "쌀뜨물", "빗물"], c: 1 },
+            { q: "5. 삼복(초복, 중복, 말복)에 더위를 이겨내기 위해 먹는 대표적인 보양식은?", a: ["삼계탕", "미역국", "칼국수", "김치찌개"], c: 0 },
+            { q: "6. 가을 추수를 감사하며 조상님께 차례를 지내는 '추석'의 또 다른 이름은?", a: ["한식", "동지", "한가위", "칠석"], c: 2 },
+            { q: "7. 추석에 온 가족이 둘러앉아 빚어 먹는 반달 모양의 떡은?", a: ["가래떡", "시루떡", "인절미", "송편"], c: 3 },
+            { q: "8. 추석날 밤, 여자들이 손을 잡고 둥글게 원을 그리며 도는 민속놀이는?", a: ["윷놀이", "강강술래", "널뛰기", "연날리기"], c: 1 },
+            { q: "9. 밤이 가장 긴 날인 '동지'에 나쁜 기운을 쫓기 위해 먹는 붉은색 음식은?", a: ["팥죽", "호박죽", "콩국수", "수수팥떡"], c: 0 },
+            { q: "10. 계절의 변화에 따라 매년 되풀이되어 온 우리 조상들의 생활 습관이나 풍습을 무엇이라고 부를까요?", a: ["학교 규칙", "세시 풍속", "교통 질서", "예절 교육"], c: 1 }
+        ];
+        const MISSION_GOAL = 10;
+        const DOORS_PER_STAGE = 2;
+        const DOOR_INTERVAL = 800;
+        const DETAIL_SPAWN_RATE = 10;
+
+        const images = {
+            bg: new Image(),
+            player: new Image(),
+            enemy: new Image(),
+            item: new Image(),
+        };
+
+        images.bg.src = "https://i.imgur.com/5PuDZxA.png"; 
+        images.player.src = "https://i.imgur.com/8nPwNHv.png"; 
+        images.enemy.src = "https://i.imgur.com/MwEI9Rc.png";  
+        images.item.src = "https://i.imgur.com/x3BbcXL.png";
+
+        // --- React Component ---
+        const App = () => {
+            const [gameState, setGameState] = useState('STOP'); 
+            const [score, setScore] = useState(0);
+            const [chakra, setChakra] = useState(100);
+            const [currentStage, setCurrentStage] = useState(1);
+            const [correctAnswers, setCorrectAnswers] = useState(0);
+            const [failReason, setFailReason] = useState("");
+            const [isMuted, setIsMuted] = useState(false); 
+            const [masterVolume, setMasterVolume] = useState(50); 
+            
+            const [currentQuiz, setCurrentQuiz] = useState(null);
+            const [quizAttempt, setQuizAttempt] = useState(0); 
+            const quizPoolRef = useRef([...originalQuizData]);
+
+            const gameRef = useRef({
+                frame: 0,
+                gameSpeed: stageConfig[1].speed,
+                bgOffset: 0,
+                keys: {},
+                player: null,
+                enemies: [],
+                items: [],
+                projectiles: [],
+                doors: [],
+                groundDetails: [],
+                particles: [],
+                collidedDoor: null,
+                animationFrameId: null,
+                currentStage: 1, 
+            });
+            
+            const canvasRef = useRef(null);
+            
+            const showStageMessage = useCallback((msg) => {
+                const el = document.getElementById('stage-message');
+                if (el) {
+                    el.innerText = msg;
+                    el.style.opacity = 1;
+                    setTimeout(() => {
+                        el.style.opacity = 0;
+                    }, 2000);
+                }
+            }, []); 
+
+            const initializeGame = useCallback(() => {
+                setScore(0);
+                setChakra(100);
+                setCurrentStage(1);
+                setCorrectAnswers(0);
+                setFailReason("");
+                setQuizAttempt(0);
+                
+                if (bgmTimerId) {
+                    clearTimeout(bgmTimerId);
+                    bgmTimerId = null;
+                }
+
+                const initialPlayerSize = 70;
+                
+                gameRef.current = {
+                    ...gameRef.current,
+                    frame: 0,
+                    gameSpeed: stageConfig[1].speed,
+                    bgOffset: 0,
+                    enemies: [],
+                    items: [],
+                    projectiles: [],
+                    doors: [],
+                    groundDetails: [],
+                    particles: [],
+                    collidedDoor: null,
+                    currentStage: 1,
+                    player: {
+                        x: 50, y: GROUND_Y - initialPlayerSize, w: initialPlayerSize, h: initialPlayerSize, 
+                        vy: 0, jumpPower: -15, grounded: false, jumpCount: 0, invincibility: 0
+                    },
+                };
+                quizPoolRef.current = [...originalQuizData];
+            }, []);
+
+            const checkCollision = useCallback((r1, r2) => {
+                const minimalPadding = 5; 
+                
+                const hit1 = {
+                    x: r1.x + minimalPadding,
+                    y: r1.y + minimalPadding,
+                    w: r1.w - minimalPadding * 2,
+                    h: r1.h - minimalPadding * 2,
+                };
+                const hit2 = {
+                    x: r2.x + minimalPadding,
+                    y: r2.y + minimalPadding,
+                    w: r2.w - minimalPadding * 2,
+                    h: r2.h - minimalPadding * 2,
+                };
+
+                return (
+                    hit1.x < hit2.x + hit2.w &&
+                    hit1.x + hit1.w > hit2.x &&
+                    hit1.y < hit2.y + hit2.h &&
+                    hit1.y + hit1.h > hit2.y
+                );
+            }, []);
+            
+            const createParticles = (x, y, color, count) => {
+                const newParticles = [];
+                for(let i=0; i<count; i++) {
+                    newParticles.push({
+                        x: x, y: y,
+                        vx: (Math.random() - 0.5) * 5,
+                        vy: (Math.random() - 0.5) * 5,
+                        life: 1.0,
+                        color: color
+                    });
+                }
+                gameRef.current.particles.push(...newParticles);
+            };
+            
+            const gameOver = useCallback((reason) => {
+                setFailReason(reason);
+                setGameState('GAMEOVER');
+                if(!isMuted) playSound('gameover');
+                
+                if (bgmTimerId) {
+                    clearTimeout(bgmTimerId);
+                    bgmTimerId = null;
+                }
+                isBGMPlaying = false;
+
+            }, [isMuted]);
+
+            const triggerQuiz = useCallback(() => {
+                if (gameState === 'PLAY' && quizPoolRef.current.length > 0) {
+                    
+                    if(!isMuted) playSound('quiz'); 
+                    
+                    const randIdx = Math.floor(Math.random() * quizPoolRef.current.length);
+                    const quiz = quizPoolRef.current[randIdx];
+                    
+                    setCurrentQuiz(quiz);
+                    setQuizAttempt(0);
+                    setGameState('QUIZ');
+                    
+                    if (bgmTimerId) {
+                        clearTimeout(bgmTimerId);
+                        bgmTimerId = null;
+                    }
+                    isBGMPlaying = false;
+                }
+            }, [gameState, isMuted]);
+
+            const checkQuizAnswer = useCallback((selected, correct) => {
+                if (selected === correct) {
+                    if(!isMuted) playSound('quiz_correct');
+                    
+                    const newQuizPool = quizPoolRef.current.filter(q => q.q !== currentQuiz.q);
+                    quizPoolRef.current = newQuizPool;
+
+                    setCorrectAnswers(prev => prev + 1);
+                    setScore(prev => prev + 300);
+
+                    if(gameRef.current.collidedDoor) gameRef.current.collidedDoor.marked = true;
+                    gameRef.current.collidedDoor = null;
+
+                    if (correctAnswers + 1 >= MISSION_GOAL) {
+                        setGameState('CLEAR');
+                        if(!isMuted) playSound('clear');
+                        return;
+                    }
+
+                    setGameState('PLAY');
+                    setCurrentQuiz(null);
+                    
+                    if (!isMuted) startBGM();
+                    
+                } else {
+                    setQuizAttempt(prev => prev + 1);
+                    
+                    if (quizAttempt + 1 >= 2) {
+                        if(!isMuted) playSound('gameover');
+                        setChakra(prev => Math.max(0, prev - 10)); 
+                        setFailReason("퀴즈 오답 (재도전 실패)");
+                        if (chakra - 10 <= 0) {
+                             setFailReason("퀴즈 오답 및 차크라 소진");
+                        }
+                        setGameState('GAMEOVER');
+
+                    } else {
+                        alert("아쉽습니다! 다시 한번 생각해보세요. (힌트: 질문을 다시 잘 읽어보세요!)");
+                    }
+                }
+            }, [currentQuiz, correctAnswers, quizAttempt, chakra, isMuted, gameOver]);
+            
+            const drawGroundDetails = (ctx, isForeground, currentStage) => {
+                const detailColor = stageConfig[currentStage].detailColor;
+                const groundY = GROUND_Y; 
+                
+                gameRef.current.groundDetails.sort((a, b) => a.z - b.z);
+
+                gameRef.current.groundDetails.forEach(d => {
+                    if ((isForeground && d.z < 0.75) || (!isForeground && d.z >= 0.75)) return; 
+
+                    ctx.fillStyle = detailColor;
+                    
+                    const x = d.x;
+                    const w = d.w * 1.5; 
+                    const h = d.h * 1.5;
+                    
+                    if (d.type === 'rock') {
+                        const s = w;
+                        ctx.fillRect(x, groundY - s * 0.5, s * 0.5, s * 0.5);
+                        ctx.fillRect(x + s * 0.3, groundY - s * 0.8, s * 0.7, s * 0.7);
+                        ctx.fillRect(x + s * 0.6, groundY - s * 0.5, s * 0.4, s * 0.5);
+
+                    } else { // bush
+                        const s = w;
+                        ctx.fillRect(x, groundY - s * 0.5, s * 0.3, s * 0.5);
+                        ctx.fillRect(x + s * 0.3, groundY - s, s * 0.4, s);
+                        ctx.fillRect(x + s * 0.7, groundY - s * 0.7, s * 0.3, s * 0.7);
+                    }
+                });
+            };
+
+            const draw = useCallback(() => {
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+                const ctx = canvas.getContext('2d');
+                const { player, bgOffset, enemies, items, projectiles, particles, doors } = gameRef.current;
+
+                ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+                ctx.save();
+                ctx.filter = stageConfig[currentStage].filter;
+                if (images.bg.complete) {
+                    ctx.drawImage(images.bg, bgOffset, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+                    ctx.drawImage(images.bg, bgOffset + CANVAS_WIDTH, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+                } else {
+                    ctx.fillStyle = stageConfig[currentStage].bgColor;
+                    ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+                }
+                ctx.restore();
+
+                drawGroundDetails(ctx, false, currentStage);
+
+                ctx.fillStyle = stageConfig[currentStage].groundColor;
+                ctx.fillRect(0, GROUND_Y, CANVAS_WIDTH, 50);
+                
+                doors.forEach(d => {
+                    const MAIN_COLOR = "#FF4500";
+                    const SHADOW_COLOR = "#8B0000";
+                    const HIGHT_Y = GROUND_Y;
+
+                    ctx.fillStyle = SHADOW_COLOR;
+                    ctx.fillRect(d.x + 10, 0, 18, HIGHT_Y); 
+                    ctx.fillStyle = MAIN_COLOR;
+                    ctx.fillRect(d.x + 10, 0, 15, HIGHT_Y); 
+
+                    ctx.fillStyle = SHADOW_COLOR;
+                    ctx.fillRect(d.x + d.w - 28, 0, 18, HIGHT_Y);
+                    ctx.fillStyle = MAIN_COLOR;
+                    ctx.fillRect(d.x + d.w - 25, 0, 15, HIGHT_Y);
+
+                    ctx.fillStyle = SHADOW_COLOR;
+                    ctx.fillRect(d.x - 10, 50, d.w + 20, 30);
+                    
+                    ctx.fillStyle = MAIN_COLOR;
+                    ctx.beginPath();
+                    ctx.moveTo(d.x - 8, 52); 
+                    ctx.lineTo(d.x + d.w + 8, 52); 
+                    ctx.lineTo(d.x + d.w + 8, 78); 
+                    ctx.lineTo(d.x - 8, 78); 
+                    ctx.fill();
+
+                    ctx.fillStyle = SHADOW_COLOR;
+                    ctx.fillRect(d.x + 10, 120, d.w - 20, 25);
+                    ctx.fillStyle = MAIN_COLOR;
+                    ctx.fillRect(d.x + 10, 122, d.w - 20, 20);
+
+                    ctx.fillStyle = "#FFF";
+                    ctx.font = "bold 40px Arial";
+                    ctx.fillText("?", d.x + d.w/2 - 10, 200);
+                });
+
+                if (player.invincibility <= 0 || (player.invincibility % 10 < 5)) {
+                    if (images.player.complete) {
+                        ctx.drawImage(images.player, player.x, player.y, player.w, player.h);
+                    } else {
+                        ctx.fillStyle = "orange";
+                        ctx.fillRect(player.x, player.y, player.w, player.h);
+                    }
+                }
+
+                enemies.forEach(e => {
+                    if (images.enemy.complete) {
+                        ctx.save();
+                        ctx.translate(e.x + e.w, e.y);
+                        ctx.scale(-1, 1);
+                        ctx.drawImage(images.enemy, 0, 0, e.w, e.h);
+                        ctx.restore();
+                    } else {
+                        ctx.fillStyle = "red";
+                        ctx.fillRect(e.x, e.y, e.w, e.h);
+                    }
+                });
+
+                items.forEach(i => {
+                    const x = i.x;
+                    const y = i.y;
+                    ctx.fillStyle = "#D32F2F"; ctx.fillRect(x + 5, y + 20, 30, 15); 
+                    ctx.fillStyle = "#B71C1C"; ctx.fillRect(x + 10, y + 35, 20, 5);
+                    ctx.fillStyle = "#FFFFFF"; ctx.fillRect(x + 5, y + 24, 30, 2);
+                    ctx.fillStyle = "#FDD835"; ctx.fillRect(x + 6, y + 10, 28, 10);
+                    ctx.fillStyle = "#FFFFFF"; ctx.fillRect(x + 10, y + 8, 8, 8);
+                    ctx.fillStyle = "#FF4081"; ctx.fillRect(x + 12, y + 10, 4, 4);
+                    ctx.fillStyle = "#795548"; ctx.fillRect(x + 28, y - 5, 3, 20);
+                    ctx.fillRect(x + 34, y - 5, 3, 20);
+                    ctx.fillStyle = "rgba(255, 255, 255, 0.5)";
+                    const steamY = Math.sin(gameRef.current.frame * 0.1) * 3;
+                    ctx.fillRect(x + 12, y - 15 + steamY, 4, 8);
+                    ctx.fillRect(x + 22, y - 20 - steamY, 4, 8);
+                });
+
+                projectiles.forEach(p => {
+                    ctx.save();
+                    ctx.translate(p.x + p.w/2, p.y + p.h/2);
+                    ctx.fillStyle = "#333"; ctx.fillRect(-15, -2, 15, 4);
+                    ctx.fillRect(-19, -4, 4, 1); ctx.fillRect(-19, 3, 4, 1);
+                    ctx.fillRect(-20, -3, 1, 6); ctx.fillRect(-15, -3, 1, 6);
+                    ctx.fillStyle = "#E0E0E0"; ctx.fillRect(0, -6, 12, 12);
+                    ctx.fillRect(12, -4, 6, 8); ctx.fillRect(18, -2, 6, 4);
+                    ctx.fillRect(24, -1, 4, 2);
+                    ctx.fillStyle = "#A0A0A0"; ctx.fillRect(0, 0, 24, 1); 
+                    ctx.restore();
+                });
+
+                particles.forEach(p => {
+                    ctx.globalAlpha = p.life;
+                    ctx.fillStyle = p.color;
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, 4, 0, Math.PI*2);
+                    ctx.fill();
+                    ctx.globalAlpha = 1.0;
+                });
+                
+                drawGroundDetails(ctx, true, currentStage);
+
+            }, [currentStage]);
+
+
+            const update = useCallback(() => {
+                const g = gameRef.current;
+                const stage = stageConfig[g.currentStage] || stageConfig[1];
+
+                g.frame++;
+                g.gameSpeed = stage.speed;
+
+                g.bgOffset -= g.gameSpeed * 0.5;
+                if (g.bgOffset <= -CANVAS_WIDTH) g.bgOffset = 0;
+
+                const nextStage = Math.floor(correctAnswers / DOORS_PER_STAGE) + 1;
+                if (nextStage > g.currentStage && nextStage <= 5) {
+                    g.currentStage = nextStage;
+                    setCurrentStage(nextStage);
+                    showStageMessage(`STAGE ${nextStage}: ${stageConfig[nextStage].name}`);
+                    
+                    if (bgmTimerId) {
+                        clearTimeout(bgmTimerId);
+                        bgmTimerId = null;
+                        isBGMPlaying = false; 
+                    }
+                    if (!isMuted) startBGM();
+                }
+
+                if (g.keys['Space'] || g.keys['ArrowUp']) {
+                    if (g.player.grounded) {
+                        if(!isMuted) playSound('jump');
+                        g.player.vy = g.player.jumpPower;
+                        g.player.grounded = false;
+                        g.player.jumpCount = 1;
+                        g.keys['Space'] = false; g.keys['ArrowUp'] = false;
+                    } else if (g.player.jumpCount === 1 && g.player.vy > -5) {
+                        if(!isMuted) playSound('jump');
+                        g.player.vy = g.player.jumpPower * 0.8;
+                        g.player.jumpCount = 2;
+                        createParticles(g.player.x, g.player.y + g.player.h, 'white', 5);
+                        g.keys['Space'] = false; g.keys['ArrowUp'] = false;
+                    }
+                }
+
+                g.player.vy += 0.8;
+                g.player.y += g.player.vy;
+
+                if (g.player.y > GROUND_Y - g.player.h) {
+                    g.player.y = GROUND_Y - g.player.h;
+                    g.player.vy = 0;
+                    g.player.grounded = true;
+                    g.player.jumpCount = 0;
+                }
+
+                if (g.player.invincibility > 0) g.player.invincibility--;
+
+                const enemySpawnRate = stage.enemySpawnRate;
+                if (g.frame % enemySpawnRate === 0 && Math.random() > 0.3) {
+                    g.enemies.push({ x: CANVAS_WIDTH, y: GROUND_Y - 60, w: 60, h: 60, marked: false });
+                }
+                if (g.frame % 300 === 0) {
+                    g.items.push({ x: CANVAS_WIDTH, y: GROUND_Y - 100 - Math.random() * 50, w: 40, h: 40, marked: false, angle: 0 });
+                }
+                if (g.frame % DOOR_INTERVAL === 0 && g.doors.length === 0 && correctAnswers < MISSION_GOAL) {
+                     g.doors.push({ x: CANVAS_WIDTH, y: 0, w: 100, h: 450, marked: false, passed: false });
+                }
+                if (g.frame % DETAIL_SPAWN_RATE === 0 && Math.random() < 0.7) {
+                    const type = Math.random() < 0.5 ? 'rock' : 'bush';
+                    const size = type === 'rock' ? Math.random() * 10 + 10 : Math.random() * 15 + 15;
+                    const z = Math.random() < 0.5 ? 0.5 : 1.0; 
+                    g.groundDetails.push({ x: CANVAS_WIDTH, y: GROUND_Y - size * z, w: size * z, h: size * z, type: type, marked: false, z: z });
+                }
+
+                g.doors.forEach(d => {
+                    d.x -= g.gameSpeed;
+                    if (gameState === 'PLAY' && !d.passed && checkCollision(g.player, d)) {
+                        g.collidedDoor = d;
+                        triggerQuiz(); 
+                    }
+                    if (d.x < -d.w) d.marked = true;
+                });
+
+                g.enemies.forEach(e => {
+                    e.x -= (g.gameSpeed + 2);
+                    if (g.player.invincibility <= 0 && checkCollision(g.player, e)) {
+                        if(!isMuted) playSound('hit');
+                        setChakra(prev => {
+                            const newChakra = Math.max(0, prev - 20);
+                            if (newChakra <= 0) {
+                                gameOver("차크라 소진 (적 충돌)");
+                            }
+                            return newChakra;
+                        });
+                        g.player.invincibility = 60; 
+                        createParticles(g.player.x, g.player.y, 'red', 20);
+                    }
+                });
+
+                g.items.forEach(i => {
+                    i.x -= g.gameSpeed;
+                    i.angle += 0.1;
+                    i.y += Math.sin(i.angle) * 0.5;
+                    if (checkCollision(g.player, i)) {
+                        if(!isMuted) playSound('item');
+                        i.marked = true;
+                        setScore(prev => prev + 100);
+                        setChakra(prev => Math.min(100, prev + 30));
+                        
+                        if (g.player.w < 200) {
+                            const growth = 4;
+                            g.player.w += growth; 
+                            g.player.h += growth;
+                            g.player.y -= growth; 
+                        }
+                        createParticles(i.x, i.y, 'gold', 10);
+                    }
+                });
+
+                g.projectiles.forEach(p => {
+                    p.x += 15;
+                    g.enemies.forEach(e => {
+                        if (!e.marked && checkCollision(p, e)) {
+                            p.marked = true;
+                            e.marked = true;
+                            setScore(prev => prev + 50);
+                            createParticles(e.x, e.y, 'red', 10);
+                        }
+                    });
+                });
+                
+                g.particles.forEach(p => { p.x += p.vx; p.y += p.vy; p.life -= 0.05; });
+                
+                g.groundDetails.forEach(d => { d.x -= g.gameSpeed * 1.5 * d.z; });
+
+
+                g.enemies = g.enemies.filter(e => !e.marked);
+                g.items = g.items.filter(i => !i.marked);
+                g.projectiles = g.projectiles.filter(p => !p.marked);
+                g.particles = g.particles.filter(p => p.life > 0);
+                g.doors = g.doors.filter(d => !d.marked);
+                g.groundDetails = g.groundDetails.filter(d => !d.marked);
+
+                if (g.frame % 10 === 0) {
+                    setScore(prev => prev + 1);
+                }
+
+            }, [checkCollision, correctAnswers, triggerQuiz, gameOver, isMuted, showStageMessage]);
+
+
+            useEffect(() => {
+                let animationFrameId;
+                const loop = () => {
+                    if (gameState === 'PLAY') {
+                        update();
+                        draw();
+                    }
+                    animationFrameId = requestAnimationFrame(loop);
+                };
+
+                if (gameState === 'PLAY') {
+                    animationFrameId = requestAnimationFrame(loop);
+                    if (!isMuted && !isBGMPlaying) startBGM();
+                } else {
+                    if (isBGMPlaying) isBGMPlaying = false;
+                }
+
+                return () => {
+                    if (animationFrameId) {
+                        cancelAnimationFrame(animationFrameId);
+                    }
+                    if (bgmTimerId) {
+                        clearTimeout(bgmTimerId);
+                        bgmTimerId = null;
+                    }
+                    isBGMPlaying = false;
+                };
+            }, [gameState, update, draw, isMuted]);
+
+
+            useEffect(() => {
+                const handleKeyDown = (e) => {
+                    startAudioContext(); 
+                    
+                    const g = gameRef.current;
+                    g.keys[e.code] = true;
+                    
+                    if (gameState === 'PLAY' && e.code === 'Enter') {
+                        e.preventDefault();
+                        shootKunai();
+                    }
+                };
+
+                const handleKeyUp = (e) => {
+                    gameRef.current.keys[e.code] = false;
+                };
+
+                const shootKunai = () => {
+                    if (chakra >= 10) {
+                        if(!isMuted) playSound('attack'); 
+                        
+                        gameRef.current.projectiles.push({
+                            x: gameRef.current.player.x + gameRef.current.player.w, 
+                            y: gameRef.current.player.y + gameRef.current.player.h/2, 
+                            w: 40, h: 10, marked: false
+                        });
+                        setChakra(prev => Math.max(0, prev - 10));
+                        
+                        if (chakra - 10 <= 0) {
+                            gameOver("차크라 소진 (공격 과다)");
+                        }
+                    }
+                };
+
+                document.addEventListener('keydown', handleKeyDown);
+                document.addEventListener('keyup', handleKeyUp);
+                
+                const btnJump = document.getElementById('btnJump');
+                const btnAtk = document.getElementById('btnAtk');
+
+                const handleTouchStart = (e, key) => { e.preventDefault(); gameRef.current.keys[key] = true; startAudioContext(); };
+                const handleTouchEnd = (e, key) => { e.preventDefault(); gameRef.current.keys[key] = false; };
+                
+                const handleAtkTouch = (e) => { e.preventDefault(); if(gameState === 'PLAY') shootKunai(); };
+
+                if (btnJump) {
+                    btnJump.addEventListener('touchstart', (e) => handleTouchStart(e, 'Space'));
+                    btnJump.addEventListener('touchend', (e) => handleTouchEnd(e, 'Space'));
+                }
+                if (btnAtk) {
+                    btnAtk.addEventListener('touchstart', handleAtkTouch);
+                }
+
+                return () => {
+                    document.removeEventListener('keydown', handleKeyDown);
+                    document.removeEventListener('keyup', handleKeyUp);
+                    if (btnJump) {
+                        btnJump.removeEventListener('touchstart', (e) => handleTouchStart(e, 'Space'));
+                        btnJump.removeEventListener('touchend', (e) => handleTouchEnd(e, 'Space'));
+                    }
+                    if (btnAtk) {
+                         btnAtk.removeEventListener('touchstart', handleAtkTouch);
+                    }
+                };
+            }, [gameState, chakra, gameOver, isMuted]);
+
+            useEffect(() => {
+                if (currentStage > gameRef.current.currentStage) {
+                    gameRef.current.currentStage = currentStage;
+                }
+            }, [currentStage, correctAnswers]);
+            
+            useEffect(() => {
+                if (masterGain) {
+                    const gainValue = masterVolume / 100;
+                    masterGain.gain.setValueAtTime(masterGain.gain.value, audioCtx.currentTime); 
+                    masterGain.gain.linearRampToValueAtTime(gainValue, audioCtx.currentTime + 0.1); 
+                    
+                    if (masterVolume === 0 && !isMuted) {
+                        setIsMuted(true);
+                    } else if (masterVolume > 0 && isMuted) {
+                        setIsMuted(false);
+                    }
+                }
+            }, [masterVolume]); 
+
+            const handleMuteToggle = () => {
+                const newMutedState = !isMuted;
+                setIsMuted(newMutedState);
+                
+                if (newMutedState) {
+                    setMasterVolume(0); 
+                } else {
+                    setMasterVolume(masterVolume === 0 ? 50 : masterVolume); 
+                }
+            };
+
+            const handleVolumeChange = (e) => {
+                const newVolume = parseInt(e.target.value, 10);
+                setMasterVolume(newVolume);
+            };
+
+
+            const startGame = () => {
+                initializeGame();
+                setGameState('PLAY');
+                if (!isMuted) startBGM();
+            };
+            
+            return (
+                <div className="relative w-[800px] h-[450px] border-4 border-yellow-600 shadow-xl shadow-yellow-800/50 bg-sky-400">
+                    <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="block"></canvas>
+
+                    <div className="ui-layer absolute inset-0 p-5 flex flex-col justify-start pointer-events-none z-10">
+                        <div className="hud flex justify-between items-center text-white text-xl font-bold">
+                            <div className="flex space-x-4">
+                                <span>점수: <span id="scoreText">{score}</span></span>
+                                <span className="text-lime-400">STAGE {currentStage}: {stageConfig[currentStage].name}</span>
+                                <span className="text-blue-400">문: <span id="missionText">{correctAnswers}</span>/{MISSION_GOAL}</span>
+                            </div>
+                            <div className="flex items-center">
+                                차크라: 
+                                <div className="chakra-container w-32 h-5 bg-gray-800 border-2 border-white ml-2 relative">
+                                    <div id="chakraBar" className="chakra-bar h-full transition-all duration-200" style={{ width: `${chakra}%`, background: chakra <= 20 ? '#ff0000' : 'linear-gradient(90deg, #00BFFF, #1E90FF)' }}></div>
+                                </div>
+                                <span className="ml-2">{chakra}%</span>
+                                
+                                <div className="flex items-center ml-4 pointer-events-auto">
+                                    <input 
+                                        type="range" 
+                                        min="0" 
+                                        max="100" 
+                                        value={masterVolume} 
+                                        onChange={handleVolumeChange} 
+                                        className="w-20 h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer range-sm"
+                                    />
+                                    <button 
+                                        className="ml-2 w-8 h-8 bg-black/50 border border-white text-white rounded-full flex items-center justify-center cursor-pointer"
+                                        onClick={handleMuteToggle}
+                                    >
+                                        {isMuted || masterVolume === 0 ? '🔇' : '🔊'}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div id="stage-message" className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-6xl text-white font-extrabold opacity-0 transition-opacity duration-500 pointer-events-none" style={{ fontFamily: 'Black Han Sans, sans-serif' }}></div>
+                    </div>
+                    
+                    <div className="controls-hint absolute top-[50px] left-1/2 transform -translate-x-1/2 bg-black/50 text-white text-xs font-jua p-1 px-3 rounded-xl whitespace-nowrap z-50">
+                        💨 점프: SPACE | 🔥 공격: ENTER | 💥 피격: 차크라 -20% | 🏹 공격: 차크라 -10% | 🍜 라면: 차크라 +30% (0% 시 게임 종료!)
+                    </div>
+
+                    <div className="mobile-controls hidden md:hidden absolute bottom-5 w-full flex justify-between px-10 pointer-events-auto">
+                        <button id="btnAtk" className="control-btn w-16 h-16 bg-white/20 border-2 border-white rounded-full text-white text-lg font-jua">공격</button>
+                        <button id="btnJump" className="control-btn w-16 h-16 bg-white/20 border-2 border-white rounded-full text-white text-lg font-jua">점프</button>
+                    </div>
+
+                    {gameState === 'STOP' && (
+                        <div className="overlay overlay-base absolute inset-0 flex flex-col items-center justify-center p-4">
+                            <h1 className="text-6xl text-yellow-500 font-extrabold" style={{ fontFamily: 'Black Han Sans, sans-serif' }}>나루토 닌자 런</h1>
+                            <p className="text-xl text-gray-300 font-jua mt-4 text-center">
+                                <span className="text-blue-400">🎯 목표: 10개의 문을 통과하세요!</span><br/>
+                                <span className="text-red-500">⚠️ 주의: 차크라가 0이 되면 게임 오버!</span><br/>
+                                <span className="text-yellow-400">🚪 문이 나타나면 퀴즈를 풀어야 합니다.</span>
+                            </p>
+                            <button className="btn btn-primary mt-8" onClick={startGame}>임무 시작</button>
+                        </div>
+                    )}
+
+                    {gameState === 'QUIZ' && currentQuiz && (
+                        <div className="overlay overlay-base absolute inset-0 flex flex-col items-center justify-center p-4">
+                            <div id="quiz-container" className="bg-white text-gray-800 p-8 rounded-xl border-4 border-red-600 w-full max-w-lg shadow-2xl">
+                                <h2 className="text-red-600 text-3xl font-extrabold mb-4" style={{ fontFamily: 'Jua, sans-serif' }}>
+                                    ⛩️ 문이 닫혔습니다! 퀴즈 풀기! ⛩️ 
+                                    {quizAttempt > 0 && (
+                                        <span className="text-sm text-yellow-600 block mt-1">(마지막 기회입니다!)</span>
+                                    )}
+                                </h2>
+                                <p className="text-2xl mb-6 font-bold" style={{ fontFamily: 'Jua, sans-serif' }}>{currentQuiz.q}</p>
+                                <div className="quiz-options grid grid-cols-2 gap-3">
+                                    {currentQuiz.a.map((answer, index) => (
+                                        <button 
+                                            key={index}
+                                            className="quiz-btn bg-gray-100 border-2 border-gray-300 p-3 rounded-lg text-lg font-jua transition-colors duration-150 cursor-pointer"
+                                            onClick={() => checkQuizAnswer(index, currentQuiz.c)}
+                                        >
+                                            {answer}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {gameState === 'GAMEOVER' && (
+                        <div className="overlay overlay-base absolute inset-0 flex flex-col items-center justify-center p-4">
+                            <h1 className="text-6xl text-red-500 font-extrabold" style={{ fontFamily: 'Black Han Sans, sans-serif' }}>임무 실패...</h1>
+                            <p className="text-2xl text-white font-jua mt-4 text-center">
+                                원인: <span className="text-yellow-400">{failReason}</span><br/>
+                                통과한 문: <span className="text-blue-400">{correctAnswers}</span>/{MISSION_GOAL}<br/>
+                                최종 점수: <span className="text-green-400">{score}</span>
+                            </p>
+                            <button className="btn btn-primary mt-8" onClick={startGame}>다시 도전</button>
+                        </div>
+                    )}
+
+                    {gameState === 'CLEAR' && (
+                        <div className="overlay overlay-base absolute inset-0 flex flex-col items-center justify-center p-4">
+                            <h1 className="text-6xl text-lime-400 font-extrabold" style={{ textShadow: '0 0 15px #fff', fontFamily: 'Black Han Sans, sans-serif' }}>🎉 모든 임무 완료! 🎉</h1>
+                            <p className="text-3xl text-white font-jua mt-4 text-center">
+                                축하합니다!<br/>
+                                모든 관문을 통과하고 닌자 임무를 완수했습니다.
+                            </p>
+                            <p className="text-2xl text-yellow-400 font-jua mt-4">최종 점수: {score}</p>
+                            <button className="btn btn-primary mt-8" onClick={startGame}>처음부터 다시</button>
+                        </div>
+                    )}
+
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
